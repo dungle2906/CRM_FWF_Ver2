@@ -1,17 +1,21 @@
 package com.example.BasicCRM_FWF.Controller;
 
 import com.example.BasicCRM_FWF.DTO.FullDateRangeResponse;
+import com.example.BasicCRM_FWF.DTO.PhoneExportDTO;
 import com.example.BasicCRM_FWF.DTORequest.CustomerReportRequest;
 import com.example.BasicCRM_FWF.DTOResponse.*;
 import com.example.BasicCRM_FWF.Service.CustomerSaleRecord.CustomerSaleRecordInterface;
 import com.example.BasicCRM_FWF.Service.CustomerSaleRecord.CustomerSaleRecordService;
 import com.example.BasicCRM_FWF.Service.FullDateRangeService;
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
+import java.io.PrintWriter;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -132,14 +136,42 @@ public class CustomerSaleRecordController {
         return service.getCustomerSaleRecord(request);
     }
 
+    // Lấy tổng số khách của FWF trong khoảng thời gian
     @PostMapping("/get-all-customer")
     public ResponseEntity<Long> getAllCustomer(@RequestBody CustomerReportRequest request) {
         return ResponseEntity.ok(service.countUniquePhonesBetweenRange(request));
     }
 
+    // Lấy tổng số khách của FWF từ trước tới giờ
     @GetMapping("/get-all-customer-no-range-time")
     public ResponseEntity<Long> getAllCustomerNoRangeTime() {
         return ResponseEntity.ok(service.countUniquePhones());
+    }
+
+    @PostMapping(
+            value = "/export-customer-phones",
+            produces = "text/csv"
+    )
+    public void exportCustomerPhonesToCsv(HttpServletResponse response) throws IOException {
+
+        List<PhoneExportDTO> data = service.exportFullPhoneNumbers();
+
+        response.setCharacterEncoding("UTF-8");
+        response.setContentType("text/csv");
+        response.setHeader(
+                "Content-Disposition",
+                "attachment; filename=customer_phones.csv"
+        );
+
+        try (PrintWriter writer = response.getWriter()) {
+
+            writer.println("STT,PHONE,SOURCE");
+
+            int index = 1;
+            for (PhoneExportDTO dto : data) {
+                writer.println(index++ + "," + dto.getPhone() + "," + dto.getSource());
+            }
+        }
     }
 
     // Thời gian đơn hàng được tạo
