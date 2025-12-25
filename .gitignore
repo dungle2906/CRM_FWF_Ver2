@@ -32,3 +32,10 @@ build/
 
 ### VS Code ###
 .vscode/
+# Note: .vscode/launch.json and .vscode/settings.json can be committed if needed
+# but typically .vscode/ is ignored for personal IDE settings
+
+### Environment Variables ###
+.env
+.env.local
+.env.*.local
