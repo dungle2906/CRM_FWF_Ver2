@@ -26,7 +26,9 @@ import java.time.LocalDateTime;
 public class BasicCrmFwfApplication {
 
 	public static void main(String[] args) {
-		SpringApplication.run(BasicCrmFwfApplication.class, args);
+		var app = new SpringApplication(BasicCrmFwfApplication.class);
+		app.addInitializers(new com.example.basiccrmfwf.shared.config.DotenvPropertySourceInitializer());
+		app.run(args);
 	}
 
 //	@Bean

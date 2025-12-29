@@ -1,5 +1,6 @@
 package com.example.BasicCRM_FWF.Service.CustomerSaleRecord;
 
+import com.example.BasicCRM_FWF.DTO.PhoneExportDTO;
 import com.example.BasicCRM_FWF.DTORequest.CustomerReportRequest;
 import com.example.BasicCRM_FWF.DTOResponse.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -43,6 +44,8 @@ public interface CustomerSaleRecordInterface {
     long countUniquePhonesBetweenRange(CustomerReportRequest request);
 
     long countUniquePhones();
+
+    List<PhoneExportDTO> exportFullPhoneNumbers();
 
     List<HourlyFacilityStatsDTO> getHourlyStats(LocalDateTime start, LocalDateTime end);
 

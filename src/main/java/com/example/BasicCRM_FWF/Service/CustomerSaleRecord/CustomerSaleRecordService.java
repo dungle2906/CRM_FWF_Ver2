@@ -1,5 +1,7 @@
 package com.example.BasicCRM_FWF.Service.CustomerSaleRecord;
 
+import com.example.BasicCRM_FWF.DTO.CustomerSource;
+import com.example.BasicCRM_FWF.DTO.PhoneExportDTO;
 import com.example.BasicCRM_FWF.DTORequest.CustomerReportRequest;
 import com.example.BasicCRM_FWF.DTOResponse.*;
 import com.example.BasicCRM_FWF.Model.*;
@@ -524,6 +526,66 @@ public class CustomerSaleRecordService implements CustomerSaleRecordInterface {
 
         return allPhones.stream().distinct().count(); // đếm số lượng điện thoại distinct
     }
+
+    public List<PhoneExportDTO> exportFullPhoneNumbers() {
+        return Stream.of(
+                        appUsageRecordRepository
+                                .findPhones()
+                                .stream()
+                                .map(p -> new PhoneExportDTO(p, CustomerSource.APP)),
+
+                        bookingRecordRepository
+                                .findPhones()
+                                .stream()
+                                .map(p -> new PhoneExportDTO(p, CustomerSource.BOOKING)),
+
+                        customerSaleRecordRepository
+                                .findPhones()
+                                .stream()
+                                .map(p -> new PhoneExportDTO(p, CustomerSource.CUSTOMER)),
+
+                        salesTransactionRepository
+                                .findPhones()
+                                .stream()
+                                .map(p -> new PhoneExportDTO(p, CustomerSource.SALES)),
+
+                        serviceRecordRepository
+                                .findPhones()
+                                .stream()
+                                .map(p -> new PhoneExportDTO(p, CustomerSource.SERVICE))
+                )
+                .flatMap(s -> s)
+                .map(dto -> normalize(dto))        // chuẩn hoá phone
+                .filter(Objects::nonNull)
+                // DISTINCT THEO PHONE → ưu tiên source xuất hiện trước
+                .collect(Collectors.toMap(
+                        PhoneExportDTO::getPhone,
+                        dto -> dto,
+                        (oldVal, newVal) -> oldVal
+                ))
+                .values()
+                .stream()
+                .sorted(Comparator.comparing(PhoneExportDTO::getPhone))
+                .collect(Collectors.toList());
+    }
+
+    private PhoneExportDTO normalize(PhoneExportDTO dto) {
+
+        if (dto.getPhone() == null) {
+            return null;
+        }
+
+        String phone = dto.getPhone().trim()
+                .replaceAll("[^0-9]", "");
+
+        if (phone.length() < 8) {
+            return null;
+        }
+
+        return new PhoneExportDTO(phone, dto.getSource());
+    }
+
+
 
     public static Result getResult(CustomerReportRequest request) {
         // Chuẩn hóa mốc thời gian trong ngày

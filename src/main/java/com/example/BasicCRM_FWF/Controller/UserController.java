@@ -30,7 +30,7 @@ public class UserController {
             Principal connectedUser
     ){
         userService.changePassword(request, connectedUser);
-        return ResponseEntity.ok().build();
+        return ResponseEntity.ok().build(); 
     }
 
     @PreAuthorize("hasRole('ADMIN')")
