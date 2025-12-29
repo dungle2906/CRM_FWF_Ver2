@@ -26,6 +26,7 @@ Our repository follows a monorepo structure optimized for enterprise-grade maint
 .
 ├── frontend/              # Next.js / React application (UI)
 ├── backend/               # API, business logic, database access
+├── poc/                   # Proof of concept, a small test demo to prove an idea is impossible
 ├── docs/                  # Architecture diagrams, design notes, API documentation
 ├── deployment/            # Infrastructure as Code (IaC)
 │   ├── docker/            # Docker-related files
