@@ -1,132 +1,141 @@
 package com.example.BasicCRM_FWF.Service.BookingRecord;
 
 import com.example.BasicCRM_FWF.DTOResponse.*;
-import com.example.BasicCRM_FWF.Model.BookingRecord;
-import com.example.BasicCRM_FWF.Model.BookingStatus;
-import com.example.BasicCRM_FWF.Model.Region;
-import com.example.BasicCRM_FWF.Repository.BookingRecordRepository;
-import com.example.BasicCRM_FWF.Repository.BookingStatusRepository;
-import com.example.BasicCRM_FWF.Repository.RegionRepository;
+import com.example.BasicCRM_FWF.Model.*;
+import com.example.BasicCRM_FWF.Repository.*;
+import com.example.BasicCRM_FWF.Service.BookingImportBatchService;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.poi.ss.usermodel.*;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.InputStream;
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import static com.example.BasicCRM_FWF.Utils.ServiceUtils.*;
-import static javax.swing.UIManager.getString;
+
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class BookingRecordService implements BookingRecordInterface {
 
+    @PersistenceContext
+    private EntityManager entityManager;
+
     private final BookingRecordRepository repository;
     private final RegionRepository regionRepository;
     private final BookingStatusRepository bookingStatusRepository;
+    private final SalesTransactionRepository salesTransactionRepository;
+    private final BookingRecordRepository bookingRepository;
+    private final BookingSalesMapRepository  bookingSalesMapRepository;
+    private final BookingImportBatchService  batchService;
 
     public void importFromExcel(MultipartFile file) {
+        final int BATCH_SIZE = 1000;
         int successCount = 0;
         int failCount = 0;
         int skippedCount = 0;
+
+        List<BookingRecord> batchBookings = new ArrayList<>(BATCH_SIZE);
 
         try (InputStream is = file.getInputStream()) {
             Workbook workbook = WorkbookFactory.create(is);
             Sheet sheet = workbook.getSheetAt(0);
 
-            // ✅ Map Region: shop_name (chuẩn hoá) → Region
-            Map<String, Region> regionMap = regionRepository.findAll()
-                    .stream()
-                    .collect(Collectors.toMap(
-                            r -> r.getShop_name().trim().toLowerCase(),
-                            Function.identity()
-                    ));
+            // ===== Cache Region =====
+            Map<String, Region> regionMap = regionRepository.findAll().stream().collect(Collectors.toMap(r -> r.getShop_name().trim().toLowerCase(), Function.identity()));
+            // ===== Cache BookingStatus =====
+            Map<String, BookingStatus> bookingStatusMap = bookingStatusRepository.findAll().stream().collect(Collectors.toMap(b -> normalize(b.getStatus().trim().toLowerCase()), Function.identity()));
 
-            Map<String, BookingStatus> bookingStatusMap = bookingStatusRepository.findAll()
-                    .stream()
-                    .collect(Collectors.toMap(
-                            b -> normalize(b.getStatus().trim().toLowerCase()),
-                            Function.identity()
-                    ));
 
-            // Bỏ qua 2 dòng đầu (header)
-            for (int i = 2; i <= sheet.getLastRowNum(); i++) {
+            for (int i = 3; i <= sheet.getLastRowNum(); i++) {
                 Row row = sheet.getRow(i);
+                if (row == null || isRowEmpty(row)) continue;
 
-                if (row == null || isRowEmpty(row)) {
-                    log.info("Stopped at row {} (blank)", i);
-                    break;
-                }
 
                 try {
-                    // Lấy dữ liệu gốc từ cell
-                    String createdStr = getCellValue(row.getCell(1));
-                    String bookingStr = getCellValue(row.getCell(2));
-                    String shopName = getCellValue(row.getCell(3));
-                    String cus_amount = getCellValue(row.getCell(15));
-                    if (cus_amount.endsWith(".")) {
-                        cus_amount = cus_amount.substring(0, cus_amount.length() - 1);
-                    }
-
-                    // Parse ngày giờ
-                    LocalDateTime created_date = parseDate(createdStr);
-                    LocalDateTime booking_date = parseDate(bookingStr);
-
-                    Region facilityRecordService = regionMap.get(shopName.trim().toLowerCase());
-                    if (facilityRecordService == null) {
-                        log.warn("Row {} skipped: Không tìm thấy Region cho tên '{}'", i, shopName);
+                    BookingRecord booking = buildBooking(row, regionMap, bookingStatusMap);
+                    if (booking == null) {
                         skippedCount++;
                         continue;
                     }
 
-                    String bookingStatusName = getCellValue(row.getCell(7));
-                    log.info("DTHIS IS INFO: " +  bookingStatusName);
-                    BookingStatus bookingStatus = null;
-                    if (bookingStatusName != null) {
-                        bookingStatus = bookingStatusMap.get(normalize(bookingStatusName.trim().toLowerCase()));
+                    batchBookings.add(booking);
+
+                    if (batchBookings.size() >= BATCH_SIZE) {
+                        try {
+                            batchService.importBatch(batchBookings);
+                            successCount += batchBookings.size();
+                            log.info("Imported {} rows...", successCount);
+                        } catch (Exception e) {
+                            failCount += batchBookings.size();
+                            log.error("Batch failed at row {}", i, e);
+                        }
+                        batchBookings.clear();
                     }
 
-                    BookingRecord bookingRecord = BookingRecord.builder()
-                            .created_date(created_date)
-                            .booking_date(booking_date)
-                            .facility(facilityRecordService)
-                            .customer_name(getCellValue(row.getCell(4)))
-                            .phone_number(getCellValue(row.getCell(5)))
-                            .bookingStatus(bookingStatus)
-                            .bookingEmployee(getCellValue(row.getCell(11)))
-                            .customerStatus("Khách cũ".equalsIgnoreCase(getCellValue(row.getCell(13))))
-                            .customer_amount(cus_amount.isBlank()? null : Integer.parseInt(cus_amount))
-                            .build();
-                    repository.save(bookingRecord);
-                    successCount++;
                 } catch (Exception e) {
-                    log.error("Row {} failed. Data snapshot: created='{}', booking='{}', shop='{}', status='{}'. Error:",
-                            i,
-                            getCellValue(row.getCell(1)),
-                            getCellValue(row.getCell(2)),
-                            getCellValue(row.getCell(3)),
-                            getCellValue(row.getCell(7)),
-                            e
-                    );
                     failCount++;
+                    log.error("Row {} failed", i, e);
                 }
             }
 
-            log.info("IMPORT COMPLETE: Success = {}, Failed = {}, Skipped = {}", successCount, failCount, skippedCount);
+            if (!batchBookings.isEmpty()) {
+                try {
+                    batchService.importBatch(batchBookings);
+                    successCount += batchBookings.size();
+                } catch (Exception e) {
+                    failCount += batchBookings.size();
+                    log.error("Final batch failed", e);
+                }
+            }
+            log.info("IMPORT DONE → Success={}, Failed={}, Skipped={}", successCount, failCount, skippedCount);
 
         } catch (Exception e) {
-            throw new RuntimeException("Failed to import Excel", e);
+            throw new RuntimeException("Import Booking Excel failed", e);
         }
+    }
+
+    private BookingRecord buildBooking(Row row, Map<String, Region> regionMap, Map<String, BookingStatus> bookingStatusMap) {
+        String createdStr = getCellValue(row.getCell(1));
+        String bookingStr = getCellValue(row.getCell(2));
+        String shopName = getCellValue(row.getCell(3));
+
+        Region facility = regionMap.get(shopName.trim().toLowerCase());
+        if (facility == null) return null;
+
+        String cusAmountRaw = getCellValue(row.getCell(11));
+        if (cusAmountRaw.endsWith(".")) {
+            cusAmountRaw = cusAmountRaw.substring(0, cusAmountRaw.length() - 1);
+        }
+
+
+        String bookingStatusName = getCellValue(row.getCell(7));
+        BookingStatus bookingStatus = bookingStatusName == null ? null : bookingStatusMap.get(normalize(bookingStatusName.trim().toLowerCase()));
+
+
+        return BookingRecord.builder().
+                created_date(parseDate(createdStr)).
+                booking_date(parseDate(bookingStr)).
+                facility(facility).
+                customer_name(getCellValue(row.getCell(4))).
+                phone_number(getCellValue(row.getCell(5))).
+                bookingStatus(bookingStatus).
+                price("0".equals(getCellValue(row.getCell(7))) ? null : getCellValue(row.getCell(7))).
+                bookingEmployee(getCellValue(row.getCell(8))).
+                customerStatus("Khách cũ".equalsIgnoreCase(getCellValue(row.getCell(9)))).
+                orderId(getCellValue(row.getCell(10))).
+                customer_amount(cusAmountRaw.isBlank() ? null : Integer.parseInt(cusAmountRaw)).
+                tag(getCellValue(row.getCell(12))).build();
     }
 
     public List<HourlyFacilityStatsDTO> getHourlyArrivalStats(CustomerReportRequestVer2 request) {

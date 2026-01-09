@@ -21,8 +21,8 @@ public class ServiceRecord {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    private Integer recordId;
-    private Integer orderId;
+    private String recordId;
+    private String orderId;
     private LocalDateTime bookingDate;
 
     @ManyToOne
@@ -31,26 +31,18 @@ public class ServiceRecord {
 
     private String customerName;
     private String phoneNumber;
+    private String customerType;
 
     @ManyToOne
     @JoinColumn(name = "base_service_id")
     private ServiceTypeTemp baseService;
 
-    private String serviceName;
-
     @ManyToOne
     @JoinColumn(name = "applied_card_id")
     private AppliedCard appliedCard;
-
-    private BigDecimal sessionPrice;
-    private String sessionType;
-    private String surcharge;
-    private BigDecimal totalSurcharge;
     private String shiftEmployee;
     private String performingEmployee;
     private BigDecimal employeeSalary;
-    private String status;
     private Double rating;
     private String reviewContent;
-    private String note;
 }

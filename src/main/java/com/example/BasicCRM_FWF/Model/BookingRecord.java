@@ -30,14 +30,13 @@ public class BookingRecord {
     private String customer_name;
     private String phone_number;
 
-    @Column(length = 500)
-    private String service_name;
-
     @ManyToOne
     @JoinColumn(name = "booking_status_id")
     private BookingStatus bookingStatus;
-
+    private String price;
     private String bookingEmployee;
     private boolean customerStatus;
+    private String orderId;
     private Integer customer_amount;
+    private String tag;
 }

@@ -10,7 +10,17 @@ import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
 
-public interface SalesTransactionRepository extends JpaRepository<SalesTransaction,Integer> {
+public interface SalesTransactionRepository extends JpaRepository<SalesTransaction, Long> {
+
+    @Query("""
+        SELECT st
+        FROM SalesTransaction st
+        WHERE st.orderCode IN :orderCodes
+    """)
+    List<SalesTransaction> findByOrderCodes(
+            @Param("orderCodes") List<String> orderCodes
+    );
+
 
     @Query("SELECT s.phoneNumber FROM SalesTransaction s WHERE s.orderDate BETWEEN :from AND :to")
     List<String> findPhonesBetweenOrderDate(LocalDateTime from, LocalDateTime to);
