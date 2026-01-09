@@ -8,6 +8,10 @@ import java.util.Map;
 public interface RealTimeInterface {
     SalesSummaryDTO getSales(String dateStart, String dateEnd, String stockId) throws Exception;
 
+    List<DailySalesDTO> getAggregatedSales(List<String> stockIds, List<String> dateList) throws Exception;
+
+    List<StockSalesByDateDTO> getSalesByStockPerDay(List<String> stockIds, List<String> dateList) throws Exception;
+
     SalesSummaryDTO getSalesCopied(String dateStart, String dateEnd, String stockId) throws Exception;
 
     String getActualRevenue(String dateStart, String dateEnd, String stockId) throws Exception;

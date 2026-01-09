@@ -340,6 +340,65 @@ public class RealTimeService implements RealTimeInterface {
 //        return dto;
 //    }
 
+    public List<StockSalesByDateDTO> getSalesByStockPerDay(List<String> stockIds, List<String> dateList) throws Exception {
+        List<StockSalesByDateDTO> result = new ArrayList<>();
+
+        for (String stockId : stockIds) {
+            List<DailySalesDTO> dailyList = new ArrayList<>();
+            for (String date : dateList) {
+                SalesSummaryDTO dto = getSalesCopied(date, date, stockId);
+                DailySalesDTO dayDto = new DailySalesDTO();
+                dayDto.setDate(date);
+                dayDto.setTotalRevenue(dto.getTotalRevenue());
+                dayDto.setCash(dto.getCash());
+                dayDto.setTransfer(dto.getTransfer());
+                dayDto.setCard(dto.getCard());
+                dayDto.setFoxieUsageRevenue(dto.getFoxieUsageRevenue());
+                dayDto.setWalletUsageRevenue(dto.getWalletUsageRevenue());
+                dailyList.add(dayDto);
+            }
+            result.add(new StockSalesByDateDTO(stockId, dailyList));
+        }
+
+        return result;
+    }
+
+    public List<DailySalesDTO> getAggregatedSales(List<String> stockIds, List<String> dateList) throws Exception {
+        Map<String, DailySalesDTO> aggregationMap = new LinkedHashMap<>();
+
+        for (String date : dateList) {
+            BigDecimal total = BigDecimal.ZERO;
+            BigDecimal cash = BigDecimal.ZERO;
+            BigDecimal transfer = BigDecimal.ZERO;
+            BigDecimal card = BigDecimal.ZERO;
+            BigDecimal foxie = BigDecimal.ZERO;
+            BigDecimal wallet = BigDecimal.ZERO;
+
+            for (String stockId : stockIds) {
+                SalesSummaryDTO dto = getSalesCopied(date, date, stockId);
+                total = total.add(new BigDecimal(dto.getTotalRevenue()));
+                cash = cash.add(new BigDecimal(dto.getCash()));
+                transfer = transfer.add(new BigDecimal(dto.getTransfer()));
+                card = card.add(new BigDecimal(dto.getCard()));
+                foxie = foxie.add(new BigDecimal(dto.getFoxieUsageRevenue()));
+                wallet = wallet.add(new BigDecimal(dto.getWalletUsageRevenue()));
+            }
+
+            DailySalesDTO agg = new DailySalesDTO();
+            agg.setDate(date);
+            agg.setTotalRevenue(total.toPlainString());
+            agg.setCash(cash.toPlainString());
+            agg.setTransfer(transfer.toPlainString());
+            agg.setCard(card.toPlainString());
+            agg.setFoxieUsageRevenue(foxie.toPlainString());
+            agg.setWalletUsageRevenue(wallet.toPlainString());
+
+            aggregationMap.put(date, agg);
+        }
+
+        return new ArrayList<>(aggregationMap.values());
+    }
+
     @Override
     public SalesSummaryDTO getSalesCopied(String dateStart, String dateEnd, String stockId) throws Exception {
         String token = authService.getToken(); // login -> lấy token real-time, chỉ login lại khi token hết hạn

@@ -32,7 +32,31 @@ public class RealTimeController {
         return salesService.getSales(dateStart, dateEnd, stockId);
     }
 
-    // Bảng tổng doanh số copiedz
+    // Lấy doanh số cho từng stock (có thể trả về list)
+    @PostMapping("/per-stock")
+    public ResponseEntity<List<StockSalesByDateDTO>> getSalesPerStock(
+            @RequestBody SalesRequest request) {
+        try {
+            List<StockSalesByDateDTO> result = salesService.getSalesByStockPerDay(request.getStockIds(), request.getDates());
+            return ResponseEntity.ok(result);
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    // Tổng  hợp doanh số từng ngày
+    @PostMapping("/aggregated")
+    public ResponseEntity<List<DailySalesDTO>> getAggregatedSales(
+            @RequestBody SalesRequest request) {
+        try {
+            List<DailySalesDTO> result = salesService.getAggregatedSales(request.getStockIds(), request.getDates());
+            return ResponseEntity.ok(result);
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    // Bảng tổng doanh số copie
     @GetMapping("/sales-summary-copied")
     public SalesSummaryDTO getSalesSummaryCopied(
             @RequestParam String dateStart,

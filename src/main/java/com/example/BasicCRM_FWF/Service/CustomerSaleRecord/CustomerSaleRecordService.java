@@ -11,6 +11,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.poi.ss.usermodel.*;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.InputStream;
@@ -41,15 +42,21 @@ public class CustomerSaleRecordService implements CustomerSaleRecordInterface {
     private final BookingRecordRepository bookingRecordRepository;
     private final RegionRepository regionRepository;
 
+    @Transactional
     public void importFromExcel(MultipartFile file) {
+
+        final int BATCH_SIZE = 1000;
+
         int success = 0;
         int failed = 0;
+
+        List<CustomerSaleRecord> batch = new ArrayList<>(BATCH_SIZE);
 
         try (InputStream is = file.getInputStream()) {
             Workbook workbook = WorkbookFactory.create(is);
             Sheet sheet = workbook.getSheetAt(0);
 
-            // ✅ Tạo map Region: shop_name (chuẩn hoá) → Region
+            // Cache Region (dù hiện chưa dùng)
             Map<String, Region> regionMap = regionRepository.findAll()
                     .stream()
                     .collect(Collectors.toMap(
@@ -59,56 +66,69 @@ public class CustomerSaleRecordService implements CustomerSaleRecordInterface {
 
             for (int i = 2; i <= sheet.getLastRowNum(); i++) {
                 Row row = sheet.getRow(i);
-                if (row == null || isRowEmpty(row)) {
-                    log.info("Stopped at row {} (blank)", i);
-                    break;
-                }
+                if (row == null || isRowEmpty(row)) break;
 
                 try {
+                    String rawShop = ServiceUtils.getCellValue(row.getCell(11));
+
                     String createdStr = ServiceUtils.getCellValue(row.getCell(1));
-                    LocalDateTime createdAt = LocalDateTime.parse(createdStr, DateTimeFormatter.ofPattern("HH:mm dd/MM/yyyy"));
+                    LocalDateTime createdAt = LocalDateTime.parse(
+                            createdStr,
+                            DateTimeFormatter.ofPattern("HH:mm dd/MM/yyyy")
+                    );
 
-                    // ✅ Tra Region bằng shop name (cột CƠ SỞ trong Excel, cột 11 tính từ 0)
-                    String shopName = ServiceUtils.getCellValue(row.getCell(11)).trim().toLowerCase();
+                    Region region = regionMap.get(rawShop.trim().toLowerCase());
+                    if (region == null) {
+                        log.warn("Row {}: Region not found '{}'", i, rawShop);
+                    }
 
-                    // Nếu "không có" thì set facility = null
-//                    Region facilityRecordService;
-//                    if ("không có".equals(shopName)) {
-//                        facilityRecordService = null;
-//                    } else {
-//                        facilityRecordService = regionMap.get(shopName);
-//                        if (facilityRecordService == null) {
-//                            log.warn("Row {}: Không tìm thấy Region cho tên '{}', sẽ import với facility = null", i, shopName);
-//                        }
-//                    }
-
-                    // ✅ Tạo record dù facility = null
+                    // ===== GIỮ NGUYÊN BUILDER CỦA BẠN =====
                     CustomerSaleRecord record = CustomerSaleRecord.builder()
                             .createdAt(createdAt)
                             .customerName(ServiceUtils.getCellValue(row.getCell(2)))
                             .customerId(parseExcelInteger(ServiceUtils.getCellValue(row.getCell(3))))
                             .phoneNumber(ServiceUtils.getCellValue(row.getCell(4)))
-                            .email(ServiceUtils.getCellValue(row.getCell(5)).contains("Không có Email") ? null : ServiceUtils.getCellValue(row.getCell(5)))
-                            .dob(ServiceUtils.getCellValue(row.getCell(6)).contains("Không có") ? null : ServiceUtils.getCellValue(row.getCell(6)))
+                            .email(ServiceUtils.getCellValue(row.getCell(5)).contains("Không có Email")
+                                    ? null : ServiceUtils.getCellValue(row.getCell(5)))
+                            .dob(ServiceUtils.getCellValue(row.getCell(6)).contains("Không có")
+                                    ? null : ServiceUtils.getCellValue(row.getCell(6)))
                             .gender(ServiceUtils.getCellValue(row.getCell(7)))
-                            .address(ServiceUtils.getCellValue(row.getCell(8)).contains("Không có") ? null : ServiceUtils.getCellValue(row.getCell(8)))
-                            .district(ServiceUtils.getCellValue(row.getCell(9)).contains("Không có") ? null : ServiceUtils.getCellValue(row.getCell(9)))
-                            .province(ServiceUtils.getCellValue(row.getCell(10)).contains("Không có") ? null : ServiceUtils.getCellValue(row.getCell(10)))
-//                            .facility(null) // null nếu không tìm thấy hoặc "không có"
-                            .customerType(ServiceUtils.getCellValue(row.getCell(12)))
-                            .source(ServiceUtils.getCellValue(row.getCell(13)))
-                            .cardCode(ServiceUtils.getCellValue(row.getCell(14)).contains("Chưa có") ? null : ServiceUtils.getCellValue(row.getCell(14)))
-                            .careStaff(ServiceUtils.getCellValue(row.getCell(15)).contains("Chưa có") ? null : ServiceUtils.getCellValue(row.getCell(15)))
-                            .wallet(toBigDecimal(ServiceUtils.getCellValue(row.getCell(16)).isBlank() ? null : row.getCell(16)))
-                            .debt(toBigDecimal(ServiceUtils.getCellValue(row.getCell(17)).isBlank() ? null : row.getCell(17)))
-                            .prepaidCard(toBigDecimal(ServiceUtils.getCellValue(row.getCell(18)).startsWith("0") ? null : row.getCell(18)))
-                            .rewardPoint(toBigDecimal(ServiceUtils.getCellValue(row.getCell(19)).startsWith("0") ? null : row.getCell(19)))
+                            .address(ServiceUtils.getCellValue(row.getCell(8)).contains("Không có")
+                                    ? null : ServiceUtils.getCellValue(row.getCell(8)))
+                            .district(ServiceUtils.getCellValue(row.getCell(9)).contains("Không có")
+                                    ? null : ServiceUtils.getCellValue(row.getCell(9)))
+                            .province(ServiceUtils.getCellValue(row.getCell(10)).contains("Không có")
+                                    ? null : ServiceUtils.getCellValue(row.getCell(10)))
+                            .facility(region)
+                            .customerType(ServiceUtils.getCellValue(row.getCell(14)))
+                            .source(ServiceUtils.getCellValue(row.getCell(15)))
+                            .cardCode(ServiceUtils.getCellValue(row.getCell(16)).contains("Chưa có")
+                                    ? null : ServiceUtils.getCellValue(row.getCell(16)))
+                            .careStaff(ServiceUtils.getCellValue(row.getCell(17)).contains("Chưa có")
+                                    ? null : ServiceUtils.getCellValue(row.getCell(17)))
+                            .wallet(toBigDecimal(
+                                    ServiceUtils.getCellValue(row.getCell(18)).isBlank()
+                                            ? null : row.getCell(18)))
+                            .debt(toBigDecimal(
+                                    ServiceUtils.getCellValue(row.getCell(19)).isBlank()
+                                            ? null : row.getCell(19)))
+                            .prepaidCard(toBigDecimal(
+                                    ServiceUtils.getCellValue(row.getCell(20)).startsWith("0")
+                                            ? null : row.getCell(20)))
+                            .rewardPoint(toBigDecimal(
+                                    ServiceUtils.getCellValue(row.getCell(21)).startsWith("0")
+                                            ? null : row.getCell(21)))
                             .build();
+                    // ====================================
 
-                    System.out.println(record.toString());
+                    batch.add(record);
 
-                    customerSaleRecordRepository.save(record);
-                    success++;
+                    if (batch.size() >= BATCH_SIZE) {
+                        customerSaleRecordRepository.saveAll(batch);
+                        success += batch.size();
+                        log.info("Imported {} rows...", success);
+                        batch.clear();
+                    }
 
                 } catch (Exception e) {
                     failed++;
@@ -116,7 +136,13 @@ public class CustomerSaleRecordService implements CustomerSaleRecordInterface {
                 }
             }
 
-            log.info("IMPORT CUSTOMER SALE: Success = {}, Failed = {}", success, failed);
+            // Flush cuối
+            if (!batch.isEmpty()) {
+                customerSaleRecordRepository.saveAll(batch);
+                success += batch.size();
+            }
+
+            log.info("IMPORT CUSTOMER SALE DONE → Success={}, Failed={}", success, failed);
 
         } catch (Exception e) {
             throw new RuntimeException("Failed to import customer sale Excel", e);
@@ -456,7 +482,6 @@ public class CustomerSaleRecordService implements CustomerSaleRecordInterface {
             totalTransfer = totalTransfer.add(Optional.ofNullable(tx.getTransfer()).orElse(BigDecimal.ZERO));
             totalCredit = totalCredit.add(Optional.ofNullable(tx.getCreditCard()).orElse(BigDecimal.ZERO));
             totalPrepaid = totalPrepaid.add(Optional.ofNullable(tx.getPrepaidCard()).orElse(BigDecimal.ZERO));
-            totalDebt = totalDebt.add(Optional.ofNullable(tx.getDebt()).orElse(BigDecimal.ZERO));
         }
 
         return new PaymentBreakdownDTO(totalCash, totalTransfer, totalCredit, totalPrepaid, totalDebt);

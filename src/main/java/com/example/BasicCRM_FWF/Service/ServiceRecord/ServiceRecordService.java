@@ -6,6 +6,7 @@ import com.example.BasicCRM_FWF.Model.*;
 import com.example.BasicCRM_FWF.Repository.*;
 import com.example.BasicCRM_FWF.Service.CustomerSaleRecord.CustomerSaleRecordService;
 import com.example.BasicCRM_FWF.Utils.ServiceUtils;
+import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.poi.ss.usermodel.*;
@@ -19,8 +20,7 @@ import java.math.RoundingMode;
 import java.sql.Date;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -39,72 +39,156 @@ public class ServiceRecordService implements ServiceRecordInterface {
     private final ServiceTypeTempRepository serviceTypeTempRepository;
 
     @Override
+    @Transactional
     public void importFromExcelOrigin(MultipartFile file) {
+
+        final int BATCH_SIZE = 500;
+
         int success = 0;
         int failed = 0;
 
+        List<ServiceRecord> batch = new ArrayList<>(BATCH_SIZE);
+
         try (InputStream is = file.getInputStream()) {
+
             Workbook workbook = WorkbookFactory.create(is);
             Sheet sheet = workbook.getSheetAt(0);
 
-            // Map chuẩn hóa cho Region, ServiceType, AppliedCard
-            Map<String, Region> regionMap = regionRepository.findAll().stream()
-                    .collect(Collectors.toMap(r -> r.getShop_name().trim().toLowerCase(), Function.identity()));
+            // ===== CACHE MASTER DATA =====
+            Map<String, Region> regionMap =
+                    regionRepository.findAll().stream()
+                            .collect(Collectors.toMap(
+                                    r -> r.getShop_name().trim().toLowerCase(),
+                                    Function.identity(),
+                                    (a, b) -> a
+                            ));
 
-            Map<String, ServiceTypeTemp> serviceTypeMap = serviceTypeTempRepository.findAll().stream()
-                    .collect(Collectors.toMap(s -> s.getService_name().trim().toLowerCase(), Function.identity()));
+            Map<String, ServiceTypeTemp> serviceTypeMap =
+                    serviceTypeTempRepository.findAll().stream()
+                            .collect(Collectors.toMap(
+                                    s -> s.getService_name().trim().toLowerCase(),
+                                    Function.identity(),
+                                    (a, b) -> a
+                            ));
 
-            Map<String, AppliedCard> appliedCardMap = appliedCardRepository.findAll().stream()
-                    .collect(Collectors.toMap(c -> c.getCard_name().trim().toLowerCase(), Function.identity()));
+            Map<String, AppliedCard> appliedCardMap =
+                    appliedCardRepository.findAll().stream()
+                            .collect(Collectors.toMap(
+                                    c -> c.getCard_name().trim().toLowerCase(),
+                                    Function.identity(),
+                                    (a, b) -> a
+                            ));
 
             for (int i = 2; i <= sheet.getLastRowNum(); i++) {
+
                 Row row = sheet.getRow(i);
                 if (row == null || isRowEmpty(row)) {
-                    log.info("Stopped at row {} (blank)", i);
-                    break;
+                    continue;
                 }
 
                 try {
+                    // ===== DATE =====
                     String dateStr = getCellValue(row.getCell(3));
-                    LocalDateTime bookingDate = LocalDateTime.parse(dateStr, DateTimeFormatter.ofPattern("HH:mm dd/MM/yyyy"));
+                    if (dateStr == null || dateStr.isBlank()) {
+                        failed++;
+                        continue;
+                    }
 
-                    String key = ServiceUtils.getCellValue(row.getCell(4)).trim().toLowerCase();
-                    Region facility = regionMap.get(key);
+                    LocalDateTime bookingDate;
+                    try {
+                        bookingDate = LocalDateTime.parse(
+                                dateStr,
+                                DateTimeFormatter.ofPattern("HH:mm dd/MM/yyyy")
+                        );
+                    } catch (Exception e) {
+                        failed++;
+                        continue;
+                    }
 
-                    String key2 = ServiceUtils.getCellValue(row.getCell(8)).trim().toLowerCase();
-                    ServiceTypeTemp serviceType = serviceTypeMap.get(key2);
+                    // ===== REGION =====
+                    String regionKey = ServiceUtils.getCellValue(row.getCell(4));
+                    Region facility = regionKey == null
+                            ? null
+                            : regionMap.get(regionKey.trim().toLowerCase());
 
-                    String key3 = ServiceUtils.getCellValue(row.getCell(9)).trim().toLowerCase();
-                    AppliedCard appliedCard = appliedCardMap.get(key3);
+                    // ===== SERVICE TYPE (AUTO INSERT) =====
+                    String serviceKey = ServiceUtils.getCellValue(row.getCell(8));
+                    ServiceTypeTemp serviceType = null;
 
+                    if (serviceKey != null && !serviceKey.isBlank()) {
+                        String normalizedServiceKey = serviceKey.trim().toLowerCase();
+                        serviceType = serviceTypeMap.get(normalizedServiceKey);
+
+                        if (serviceType == null) {
+                            serviceType = ServiceTypeTemp.builder()
+                                    .service_name(serviceKey.trim())
+                                    .build();
+
+                            serviceType = serviceTypeTempRepository.save(serviceType);
+                            serviceTypeMap.put(normalizedServiceKey, serviceType);
+
+                            log.warn("AUTO INSERT ServiceTypeTemp: '{}'", serviceKey);
+                        }
+                    }
+
+                    // ===== APPLIED CARD (AUTO INSERT) =====
+                    String cardKey = ServiceUtils.getCellValue(row.getCell(9));
+                    AppliedCard appliedCard = null;
+
+                    if (cardKey != null && !cardKey.isBlank()) {
+                        String normalizedCardKey = cardKey.trim().toLowerCase();
+                        appliedCard = appliedCardMap.get(normalizedCardKey);
+
+                        if (appliedCard == null) {
+                            appliedCard = AppliedCard.builder()
+                                    .card_name(cardKey.trim())
+                                    .build();
+
+                            appliedCard = appliedCardRepository.save(appliedCard);
+                            appliedCardMap.put(normalizedCardKey, appliedCard);
+
+                            log.warn("AUTO INSERT AppliedCard: '{}'", cardKey);
+                        }
+                    }
+
+                    // ===== SERVICE RECORD =====
                     ServiceRecord record = ServiceRecord.builder()
+                            .recordId(ServiceUtils.getCellValue(row.getCell(1)))
+                            .orderId(ServiceUtils.getCellValue(row.getCell(2)))
                             .bookingDate(bookingDate)
                             .facility(facility)
                             .customerName(ServiceUtils.getCellValue(row.getCell(5)))
                             .phoneNumber(ServiceUtils.getCellValue(row.getCell(6)))
+                            .customerType(ServiceUtils.getCellValue(row.getCell(7)))
                             .baseService(serviceType)
-                            .serviceName(ServiceUtils.getCellValue(row.getCell(8)))
                             .appliedCard(appliedCard)
-                            .sessionPrice(toBigDecimal(row.getCell(10)))
-                            .sessionType(ServiceUtils.getCellValue(row.getCell(11)).startsWith("Buổi thường") || ServiceUtils.getCellValue(row.getCell(11)).isBlank() ? null : ServiceUtils.getCellValue(row.getCell(11)))
-                            .surcharge(ServiceUtils.getCellValue(row.getCell(12)).startsWith("Không có") || ServiceUtils.getCellValue(row.getCell(12)).isBlank() ? null : ServiceUtils.getCellValue(row.getCell(12)))
-                            .totalSurcharge(ServiceUtils.getCellValue(row.getCell(13)).startsWith("0") || ServiceUtils.getCellValue(row.getCell(13)).isBlank() ? null : toBigDecimal(row.getCell(13)))
-                            .shiftEmployee(ServiceUtils.getCellValue(row.getCell(14)))
-                            .performingEmployee(ServiceUtils.getCellValue(row.getCell(15)))
-                            .employeeSalary(toBigDecimal(row.getCell(16)))
-                            .status(ServiceUtils.getCellValue(row.getCell(17)).startsWith("Hoàn thành") || ServiceUtils.getCellValue(row.getCell(17)).isBlank() ? null : ServiceUtils.getCellValue(row.getCell(17)))
+                            .shiftEmployee(ServiceUtils.getCellValue(row.getCell(10)))
+                            .performingEmployee(ServiceUtils.getCellValue(row.getCell(11)))
+                            .employeeSalary(toBigDecimal(row.getCell(12)))
                             .build();
 
-                    repository.save(record);
+                    batch.add(record);
                     success++;
+
+                    // ===== FLUSH BATCH =====
+                    if (batch.size() >= BATCH_SIZE) {
+                        repository.saveAll(batch);
+                        batch.clear();
+                        log.info("Imported {} service records...", success);
+                    }
 
                 } catch (Exception e) {
                     failed++;
-                    log.warn("Row {} failed: {}", i, e.getMessage());
+                    log.warn("Row {} failed", i, e);
                 }
             }
 
-            log.info("IMPORT SERVICE RECORD: Success = {}, Failed = {}", success, failed);
+            // ===== FLUSH REMAIN =====
+            if (!batch.isEmpty()) {
+                repository.saveAll(batch);
+            }
+
+            log.info("IMPORT SERVICE RECORD DONE → Success={}, Failed={}", success, failed);
 
         } catch (Exception e) {
             throw new RuntimeException("Failed to import service record Excel", e);

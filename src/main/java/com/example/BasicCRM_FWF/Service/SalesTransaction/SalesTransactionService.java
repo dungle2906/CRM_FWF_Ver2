@@ -12,6 +12,7 @@ import com.example.BasicCRM_FWF.Repository.SalesTransactionRepository;
 import com.example.BasicCRM_FWF.Repository.ServiceTypeRepository;
 import com.example.BasicCRM_FWF.Service.CustomerSaleRecord.CustomerSaleRecordService;
 import com.example.BasicCRM_FWF.Utils.ServiceUtils;
+import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.tuple.Pair;
@@ -44,7 +45,153 @@ public class SalesTransactionService implements SalesTransactionInterface {
     private final ServiceTypeRepository serviceTypeRepository;
     private final SaleServiceItemRepository saleServiceItemRepository;
 
+    @Transactional
     public void importFromExcel(MultipartFile file) {
+
+        final int BATCH_SIZE = 500;
+
+        int successCount = 0;
+        int failCount = 0;
+
+        List<SalesTransaction> batchST = new ArrayList<>();
+        List<SaleServiceItem> batchItems = new ArrayList<>();
+
+        try (InputStream is = file.getInputStream()) {
+
+            Workbook workbook = WorkbookFactory.create(is);
+            Sheet sheet = workbook.getSheetAt(0);
+
+            // ===== Cache Region =====
+            Map<String, Region> regionMap = regionRepository.findAll()
+                    .stream()
+                    .collect(Collectors.toMap(
+                            r -> r.getShop_name().trim().toLowerCase(),
+                            Function.identity(),
+                            (a, b) -> a
+                    ));
+
+            // ===== Cache ServiceType =====
+            List<ServiceType> allServiceTypes = serviceTypeRepository.findAll();
+
+            Map<String, ServiceType> serviceTypeByName =
+                    allServiceTypes.stream()
+                            .filter(st -> st.getService_name() != null)
+                            .collect(Collectors.toMap(
+                                    st -> normalizeServiceName(st.getService_name()),
+                                    Function.identity(),
+                                    (a, b) -> a
+                            ));
+
+            Map<String, ServiceType> serviceTypeByCode =
+                    allServiceTypes.stream()
+                            .filter(st -> st.getService_code() != null)
+                            .collect(Collectors.toMap(
+                                    st -> st.getService_code().trim(),
+                                    Function.identity(),
+                                    (a, b) -> a
+                            ));
+
+            // ===== Loop rows =====
+            for (int i = 2; i <= sheet.getLastRowNum(); i++) {
+
+                Row row = sheet.getRow(i);
+                if (row == null || isRowEmpty(row)) continue;
+
+                try {
+                    String orderCode = ServiceUtils.getCellValue(row.getCell(1));
+                    String rawShop = ServiceUtils.getCellValue(row.getCell(2));
+                    String dateTimeStr = ServiceUtils.getCellValue(row.getCell(3));
+
+                    if (orderCode.startsWith("#")) {
+                        orderCode = orderCode.substring(1);
+                    }
+
+                    if (orderCode == null || rawShop == null || dateTimeStr == null) {
+                        failCount++;
+                        continue;
+                    }
+
+                    LocalDateTime orderDate;
+                    try {
+                        orderDate = LocalDateTime.parse(
+                                dateTimeStr,
+                                DateTimeFormatter.ofPattern("HH:mm dd/MM/yyyy")
+                        );
+                    } catch (Exception e) {
+                        log.error("Row {} invalid datetime '{}'", i, dateTimeStr);
+                        failCount++;
+                        continue;
+                    }
+
+                    Region region = regionMap.get(rawShop.trim().toLowerCase());
+                    if (region == null) {
+                        log.warn("Row {}: Region not found '{}'", i, rawShop);
+                        failCount++;
+                        continue;
+                    }
+
+                    // ===== Parse services =====
+                    Map<ServiceType, Integer> serviceTypeMap =
+                            ServiceUtils.parseServicesPerBill(
+                                    ServiceUtils.getCellValue(row.getCell(13)),
+                                    serviceTypeByName,
+                                    serviceTypeByCode,
+                                    i
+                            );
+
+                    SalesTransaction st = SalesTransaction.builder()
+                            .orderCode(orderCode)
+                            .facility(region)
+                            .orderDate(orderDate)
+                            .customerCode(ServiceUtils.getCellValue(row.getCell(4)))
+                            .customerName(ServiceUtils.getCellValue(row.getCell(5)))
+                            .phoneNumber(ServiceUtils.getCellValue(row.getCell(6)))
+                            .cash(toBigDecimal(row.getCell(8)))
+                            .transfer(toBigDecimal(row.getCell(9)))
+                            .creditCard(toBigDecimal(row.getCell(10)))
+                            .wallet(toBigDecimal(row.getCell(11)))
+                            .prepaidCard(toBigDecimal(row.getCell(12)))
+                            .build();
+
+                    batchST.add(st);
+
+                    serviceTypeMap.forEach((serviceType, qty) ->
+                            batchItems.add(SaleServiceItem.builder()
+                                    .salesTransaction(st)
+                                    .serviceType(serviceType)
+                                    .quantity(qty)
+                                    .build())
+                    );
+
+                    successCount++;
+
+                    if (batchST.size() >= BATCH_SIZE) {
+                        repository.saveAll(batchST);
+                        saleServiceItemRepository.saveAll(batchItems);
+                        batchST.clear();
+                        batchItems.clear();
+                        log.info("Imported {} rows...", successCount);
+                    }
+
+                } catch (Exception e) {
+                    log.error("Row {} failed", i, e);
+                    failCount++;
+                }
+            }
+
+            if (!batchST.isEmpty()) {
+                repository.saveAll(batchST);
+                saleServiceItemRepository.saveAll(batchItems);
+            }
+
+            log.info("IMPORT DONE → Success={}, Failed={}", successCount, failCount);
+
+        } catch (Exception e) {
+            throw new RuntimeException("Import Excel failed", e);
+        }
+    }
+
+    /* public void importFromExcel(MultipartFile file) {
         int successCount = 0;
         int failCount = 0;
         int failed = 0;
@@ -103,7 +250,7 @@ public class SalesTransactionService implements SalesTransactionInterface {
                                 ? allComboString.substring(start).trim()
                                 : allComboString.substring(start, idx).trim();
 
-                        Set<String> printedPerfectStrings = new HashSet<>();
+//                        Set<String> printedPerfectStrings = new HashSet<>();
 
                         if (!originalString.isEmpty()) {
                             Pair<String, Integer> parsed = extractQuantityAndCleanName(originalString);
@@ -121,9 +268,9 @@ public class SalesTransactionService implements SalesTransactionInterface {
                             }
 
                             // 🔥 PRINT PERFECT STRING **if not duplicated**
-                            if (!printedPerfectStrings.contains(perfectString)) {
-                                printedPerfectStrings.add(perfectString);
-                            }
+//                            if (!printedPerfectStrings.contains(perfectString)) {
+//                                printedPerfectStrings.add(perfectString);
+//                            }
 
                             // Tiếp tục logic cũ
                             ServiceType serviceType = getServiceType(perfectString);
@@ -147,14 +294,12 @@ public class SalesTransactionService implements SalesTransactionInterface {
                             .orderDate(orderDate)
                             .customerName(ServiceUtils.getCellValue(row.getCell(5)))
                             .phoneNumber(ServiceUtils.getCellValue(row.getCell(6)))
-                            .totalAmount(toBigDecimal(ServiceUtils.getCellValue(row.getCell(16)).isBlank() ? null : row.getCell(16)))
                             .cashTransferCredit(toBigDecimal(ServiceUtils.getCellValue(row.getCell(17)).isBlank() ? null : row.getCell(17)))
                             .cash(toBigDecimal(ServiceUtils.getCellValue(row.getCell(18)).isBlank() ? null : row.getCell(18)))
                             .transfer(toBigDecimal(ServiceUtils.getCellValue(row.getCell(19)).isBlank() ? null : row.getCell(19)))
                             .creditCard(toBigDecimal(ServiceUtils.getCellValue(row.getCell(20)).isBlank() ? null : row.getCell(20)))
                             .wallet(toBigDecimal(ServiceUtils.getCellValue(row.getCell(21)).startsWith("0") ? null : row.getCell(21)))
                             .prepaidCard(toBigDecimal(ServiceUtils.getCellValue(row.getCell(22)).startsWith("0") ? null : row.getCell(22)))
-                            .debt(toBigDecimal(ServiceUtils.getCellValue(row.getCell(23)).startsWith("0") ? null : row.getCell(23)))
                             .build();
                     repository.save(st);
 
@@ -181,93 +326,7 @@ public class SalesTransactionService implements SalesTransactionInterface {
         } catch (Exception e) {
             throw new RuntimeException("Failed to import Excel", e);
         }
-    }
-
-    private ServiceType getServiceType(String perfectString) {
-        int cutString = Math.round((float) perfectString.length() / 3);
-        ServiceType serviceType;
-        if (perfectString.startsWith(perfectString.substring(0, cutString)) && perfectString.endsWith("lẻ)")) {
-            String startString = perfectString.substring(0, cutString);
-            serviceType = serviceTypeRepository.findByServiceName(startString + "%", "%lẻ)");
-        } else if (perfectString.startsWith(perfectString.substring(0, cutString)) && perfectString.endsWith("ard)")) {
-            String startString = perfectString.substring(0, cutString);
-            serviceType = serviceTypeRepository.findByServiceName(startString + "%", "%ard)");
-        } else if (perfectString.startsWith(perfectString.substring(0, cutString)) && perfectString.endsWith("ĐẦU)")) {
-            String startString = perfectString.substring(0, cutString);
-            serviceType = serviceTypeRepository.findByServiceName(startString + "%", "%ĐẦU)");
-//        } else if (perfectString.toUpperCase().startsWith("QT KÈM THẺ TIỀN FOXIE")) {
-//            serviceType = serviceTypeRepository.findByCode("QT 1.1");
-//        } else if (perfectString.startsWith("DV 1: AQUA PEEL CLEANSE")) {
-//            serviceType = serviceTypeRepository.findByCode("DV 1.1"); // service_code = 'DV 1.1'
-//        } else if (perfectString.contains("COMBO CS 11: BURNT SKIN SOS")) {
-//            serviceType = serviceTypeRepository.findByCode("CBCS 11.2");
-//        } else if (perfectString.contains("COMBO CS 3: PRESERVE YOUTH") && perfectString.toLowerCase().contains("giá thẻ")) {
-//            serviceType = serviceTypeRepository.findByCode("CBCS 3.2");
-//        } else if (perfectString.contains("DV 4: LUMIGLOW CLEANSE") && perfectString.contains("buổi lẻ")) {
-//            serviceType = serviceTypeRepository.findByCode("DV 4.1");
-//        } else if (perfectString.contains("COMBO CS 3: PRESERVE YOUTH") && perfectString.contains("buổi lẻ")) {
-//            serviceType = serviceTypeRepository.findByCode("CBCS 3.1");
-//        } else if (perfectString.contains("CT 2: ADDED LUMIGLOW")) {
-//            serviceType = perfectString.toLowerCase().contains("giá") ? serviceTypeRepository.findByCode("CT 2.2") : serviceTypeRepository.findByCode("CT 2.1");
-//        } else if (perfectString.contains("COMBO 1: DEEP CLEANSE CRYO") && perfectString.toLowerCase().contains("giá")) {
-//            serviceType = serviceTypeRepository.findByCode("CB 1.2");
-//        } else if (perfectString.contains("COMBO CS 1: MESO TẾ BÀO GỐC DNA CÁ HỒI") && perfectString.toLowerCase().contains("giá")) {
-//            serviceType = serviceTypeRepository.findByCode("CBCS 1.2");
-//        } else if (perfectString.contains("DV 2: DEEP CLEANSE") && perfectString.toLowerCase().contains("giá")) {
-//            serviceType = serviceTypeRepository.findByCode("DV 2.2");
-//        } else if (perfectString.contains("COMBO CS 1: MESO TẾ BÀO GỐC DNA CÁ HỒI") && perfectString.contains("buổi lẻ")) {
-//            serviceType = serviceTypeRepository.findByCode("CBCS 1.1");
-//        } else if (perfectString.contains("DV 3: CRYO CLEANSE") && perfectString.toLowerCase().contains("giá")) {
-//            serviceType = serviceTypeRepository.findByCode("DV 3.3");
-//        } else if (perfectString.contains("COMBO 6") && perfectString.toLowerCase().contains("giá")) {
-//            serviceType = serviceTypeRepository.findByCode("CB 6.2");
-//        } else if (perfectString.contains("DV 1: AQUA PEEL CLEANSE") && perfectString.contains("buổi lẻ")) {
-//            serviceType = serviceTypeRepository.findByCode("DV 1.1");
-//        } else if (perfectString.contains("DV 1: AQUA PEEL CLEANSE") && perfectString.toLowerCase().contains("giá")) {
-//            serviceType = serviceTypeRepository.findByCode("DV 1.3");
-//        } else if (perfectString.contains("DV 5: GYMMING CLEANSE") && perfectString.toLowerCase().contains("giá")) {
-//            serviceType = serviceTypeRepository.findByCode("DV 5.2");
-//        } else if (perfectString.contains("DV 6: EYE-REVIVE CLEANSE") && perfectString.toLowerCase().contains("giá")) {
-//            serviceType = serviceTypeRepository.findByCode("DV 6.2");
-//        } else if (perfectString.contains("COMBO 1: DEEP CLEANSE CRYO") && perfectString.contains("buổi lẻ")) {
-//            serviceType = serviceTypeRepository.findByCode("CB 1.1");
-//        } else if (perfectString.contains("DV 4: LUMIGLOW CLEANSE") && perfectString.contains("buổi lẻ")) {
-//            serviceType = serviceTypeRepository.findByCode("DV 4.1");
-//        } else if (perfectString.contains("DV 5: GYMMING CLEANSE") && perfectString.contains("buổi lẻ")) {
-//            serviceType = serviceTypeRepository.findByCode("DV 5.1");
-//        } else if (perfectString.contains("DV 6: EYE-REVIVE CLEANSE") && perfectString.contains("buổi lẻ")) {
-//            serviceType = serviceTypeRepository.findByCode("DV 6.1");
-//        } else if (perfectString.contains("TRẢI NGHIỆM LẦN ĐẦU") && perfectString.contains("COMBO 9")) {
-//            serviceType = serviceTypeRepository.findByCode("CB9.3");
-//        } else if (perfectString.contains("KHUYẾN MÃI TRẢI NGHIỆM LẦN ĐẦU") && perfectString.contains("COMBO 4")) {
-//            serviceType = serviceTypeRepository.findByCode("CB 4.3");
-//        } else if (perfectString.contains("SỮA RỬA MẶT LÀM DỊU ELRAVIE")) {
-//            serviceType = serviceTypeRepository.findByCode("MP000037");
-//        } else if (perfectString.contains("BỘ SẢN PHẨM DƯỠNG DA FULL SIZE ELRAVIE")) {
-//            serviceType = serviceTypeRepository.findByCode("MP000024");
-//        } else if (perfectString.contains("KEM DƯỠNG MẮT ELRAVIE")) {
-//            serviceType = serviceTypeRepository.findByCode("MP000014");
-//        } else if (perfectString.startsWith("CT 6: ADDED GOODBYE ACNE")) {
-//            serviceType = serviceTypeRepository.findByCode("CT 6.1");
-//        } else if (perfectString.startsWith("COMBO CS 3: PRESERVE YOUTH")) {
-//            serviceType = serviceTypeRepository.findByCode("CBCS 3.1");
-//        } else if (perfectString.startsWith("COMBO CS 9: PHỤC HỒI NÂNG CAO PDRN")) {
-//            serviceType = serviceTypeRepository.findByCode("CBCS 9.1");
-//        } else if (perfectString.startsWith("CT 4: ADDED EYE-REVIVE - CỘNG THÊM CHĂM SÓC MẮT")) {
-//            serviceType = serviceTypeRepository.findByCode("CT 4.1");
-//        } else if (perfectString.startsWith("CT 3: ADDED GYMMING - CỘNG THÊM SĂN CHẮC DA")) {
-//            serviceType = serviceTypeRepository.findByCode("CT 3.1");
-//        } else if (perfectString.startsWith("COMBO CS 1: MESO TẾ BÀO GỐC DNA CÁ HỒI (Giá Foxie Member Card)")) {
-//            serviceType = serviceTypeRepository.findByCode("CBCS 1.1");
-//        } else if (perfectString.startsWith("COMBO 6 : LUMIGLOW CLEANSE CRYO GYMMING (Giá Foxie Member Card)")) {
-//            serviceType = serviceTypeRepository.findByCode("CB 6.1");
-        } else if (perfectString.equals("Gel Dưỡng Da Dưỡng Âm Dịu Nhẹ Phục Hồi Se Khít Lỗ Chân Lông Elravie Pro Ultra Soothing Gel 140ml")) {
-            serviceType = serviceTypeRepository.findByCode("MP000028");
-        } else {
-            serviceType = serviceTypeRepository.findByName(perfectString);
-        }
-        return serviceType;
-    }
+    } */
 
     public List<RegionRevenueDTO> getRevenueByRegion(CustomerReportRequest request) {
         List<Object[]> rawData = repository.fetchRevenueByRegionAndDate(request.getFromDate(), request.getToDate());
